@@ -175,13 +175,7 @@ def predict_emotion(text_input: TextInput):
         truncating="post"
     )
 
-    probabilites = BiGRU_model.predict(padded_sequence, verbose=0)[0]
-
-    print("\n==============================")
-    print("MODEL RAW OUTPUT:")
-    print(probabilites)
-    print("TOP INDEX:", int(np.argmax(probabilites)))
-    print("==============================\n")
+    probabilites     = BiGRU_model.predict(padded_sequence)[0]
 
     top_emotion_index = int(np.argmax(probabilites)) # 4
     all_probabilites =  {
