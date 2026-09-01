@@ -1,5 +1,6 @@
-from keras.utils import pad_sequences
-from tensorflow.keras.preprocessing.text import Tokenizer  # type: ignore[reportMissingImports]
+
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.preprocessing.text import Tokenizer
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +45,16 @@ EMOTION_EMOJIS = {
     "surprise": "😲",
 }
 
+
+
+"""
+2. Preprocess the upcoming text
+Cleans raw text so it matches the format used while training.
+A. Convert the text to lowercase. -done
+B. Remove apostrophes (e.g can't -> cant). -done
+C. Remove Special Characters and Punctuation. -done
+D. Remove extra spaces -done
+"""
 
 def preprocess_text(text: str)->str:
     text = text.lower()
@@ -164,7 +175,13 @@ def predict_emotion(text_input: TextInput):
         truncating="post"
     )
 
-    probabilites     = BiGRU_model.predict(padded_sequence)[0]
+    probabilites = BiGRU_model.predict(padded_sequence, verbose=0)[0]
+
+    print("\n==============================")
+    print("MODEL RAW OUTPUT:")
+    print(probabilites)
+    print("TOP INDEX:", int(np.argmax(probabilites)))
+    print("==============================\n")
 
     top_emotion_index = int(np.argmax(probabilites)) # 4
     all_probabilites =  {

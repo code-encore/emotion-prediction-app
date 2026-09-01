@@ -1,329 +1,323 @@
-(() => {
-  'use strict';
+/* ========================================
+   Configuration & State
+======================================== */
+const EMOTION_META = {
+    sadness:  { emoji: '😢', color: '#5b8fb9', glow: 'rgba(91,143,185,0.25)' },
+    joy:      { emoji: '😄', color: '#e8a849', glow: 'rgba(232,168,73,0.25)' },
+    love:     { emoji: '❤️', color: '#d45d6e', glow: 'rgba(212,93,110,0.25)' },
+    anger:    { emoji: '😠', color: '#c94432', glow: 'rgba(201,68,50,0.25)' },
+    fear:     { emoji: '😨', color: '#8b7ec8', glow: 'rgba(139,126,200,0.25)' },
+    surprise: { emoji: '😲', color: '#4ecdc4', glow: 'rgba(78,205,196,0.25)' }
+};
 
-  /* =====================================================
-     1. Emotion palette — the whole UI re-tints to the
-        emotion the model predicts.
-     ===================================================== */
-  const EMOTIONS = {
-    sadness:  { emoji: '😢', color: '#6aa5f8', deep: '#2b4bd4' },
-    joy:      { emoji: '😄', color: '#ffc94d', deep: '#b45309' },
-    love:     { emoji: '❤️', color: '#fb7185', deep: '#be123c' },
-    anger:    { emoji: '😠', color: '#ff7a59', deep: '#b91c1c' },
-    fear:     { emoji: '😨', color: '#a78bfa', deep: '#6d28d9' },
-    surprise: { emoji: '😲', color: '#4fd8e8', deep: '#0e7490' },
-  };
+const emotionOrder = ['sadness', 'joy', 'love', 'anger', 'fear', 'surprise'];
 
-  const NEUTRAL = { emoji: '🙂', color: '#8b9dff', deep: '#3237ab' };
-  const MAX_LEN = 2000; // keep in sync with the pydantic field
-  const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+let isPredicting = false;
 
-  /* =====================================================
-     2. Network layer — talks to the FastAPI backend.
-        (This block is swapped for a mock in the offline
-         demo build of this page.)
-     ===================================================== */
-  /* [API:BEGIN] */
-  const API = {
-    async health() {
-      const res = await fetch('/health', { headers: { Accept: 'application/json' } });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return res.json();
-    },
+/* ========================================
+   DOM References
+======================================== */
+const textInput = document.getElementById('text-input');
+const charCount = document.getElementById('char-count');
+const predictBtn = document.getElementById('predict-btn');
+const resultSection = document.getElementById('result-section');
+const emotionOrb = document.getElementById('emotion-orb');
+const emotionName = document.getElementById('emotion-name');
+const emotionConfidence = document.getElementById('emotion-confidence');
+const analyzedText = document.getElementById('analyzed-text');
+const emotionDisplay = document.getElementById('emotion-display');
+const probBarsContainer = document.getElementById('prob-bars');
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+const toast = document.getElementById('toast');
+const toastMsg = document.getElementById('toast-msg');
+const glow1 = document.getElementById('glow1');
+const glow2 = document.getElementById('glow2');
 
-    async predict(text) {
-      const res = await fetch('/predict', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) {
-        let detail = `The server responded with ${res.status}`;
-        try {
-          const body = await res.json();
-          if (body && body.detail) detail = String(body.detail);
-        } catch (_) { /* body wasn't json — keep default detail */ }
-        throw new Error(detail);
-      }
-      return res.json();
-    },
-  };
-  /* [API:END] */
+/* ========================================
+   Background Particles
+======================================== */
+(function initParticles() {
+    const canvas = document.getElementById('bg-canvas');
+    const ctx = canvas.getContext('2d');
+    let particles = [];
+    const PARTICLE_COUNT = 40;
+    let w, h;
+    let animId;
 
-  /* =====================================================
-     3. DOM references
-     ===================================================== */
-  const $ = (id) => document.getElementById(id);
-  const els = {
-    status: $('status'),
-    statusText: $('statusText'),
-    form: $('composer'),
-    input: $('input'),
-    count: $('count'),
-    btn: $('analyzeBtn'),
-    btnIdle: $('btnIdle'),
-    btnBusy: $('btnBusy'),
-    error: $('error'),
-    errorMsg: $('errorMsg'),
-    retry: $('retryBtn'),
-    result: $('result'),
-    resEmoji: $('resEmoji'),
-    resEmotion: $('resEmotion'),
-    resConf: $('resConf'),
-    resQuote: $('resQuote'),
-    resMs: $('resMs'),
-    bars: $('bars'),
-    kbdMod: $('kbdMod'),
-    bg: document.querySelector('.bg'),
-  };
-
-  let busy = false;
-  let lastText = '';
-
-  /* =====================================================
-     4. Small helpers
-     ===================================================== */
-  const escapeHtml = (s) =>
-    String(s).replace(/[&<>"']/g, (c) => (
-      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-    ));
-
-  function countUp(el, target, duration = 1000, decimals = 1) {
-    if (REDUCED_MOTION || !Number.isFinite(target)) {
-      el.textContent = target.toFixed(decimals);
-      return;
+    function resize() {
+        w = canvas.width = window.innerWidth;
+        h = canvas.height = window.innerHeight;
     }
-    const t0 = performance.now();
-    const step = (now) => {
-      const t = Math.min(1, (now - t0) / duration);
-      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
-      el.textContent = (target * eased).toFixed(decimals);
-      if (t < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-  }
+    resize();
+    window.addEventListener('resize', resize);
 
-  function setTheme(emotion) {
-    const m = EMOTIONS[emotion] || NEUTRAL;
-    const s = document.documentElement.style;
-    s.setProperty('--accent', m.color);
-    s.setProperty('--glow-1', m.deep);
-    s.setProperty('--glow-2', m.color);
-  }
-
-  function updateCount() {
-    const n = els.input.value.length;
-    els.count.textContent = `${n} / ${MAX_LEN}`;
-    els.count.classList.toggle('warn', n >= MAX_LEN * 0.9 && n < MAX_LEN);
-    els.count.classList.toggle('over', n >= MAX_LEN);
-  }
-
-  function nudge() {
-    els.form.classList.remove('shake');
-    void els.form.offsetWidth; // restart the animation
-    els.form.classList.add('shake');
-    els.input.focus();
-  }
-
-  function setLoading(loading) {
-    busy = loading;
-    els.btn.disabled = loading;
-    els.btn.setAttribute('aria-busy', String(loading));
-    els.btnIdle.hidden = loading;
-    els.btnBusy.hidden = !loading;
-    els.form.classList.toggle('is-scanning', loading);
-    document.querySelectorAll('.chip').forEach((c) => { c.disabled = loading; });
-  }
-
-  function showError(msg) {
-    els.errorMsg.textContent = msg;
-    els.error.hidden = false;
-  }
-
-  function hideError() { els.error.hidden = true; }
-
-  function hideResult() {
-    els.result.hidden = true;
-    els.result.classList.remove('shown');
-  }
-
-  /* =====================================================
-     5. Render the prediction
-     ===================================================== */
-  function render(data, fallbackText, elapsedMs) {
-    const probsRaw = (data && (data.all_probabilites || data.all_probabilities)) || {};
-    const probs = {};
-    for (const [k, v] of Object.entries(probsRaw)) {
-      if (typeof v === 'number' && Number.isFinite(v)) probs[k] = v;
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+        particles.push({
+            x: Math.random() * w,
+            y: Math.random() * h,
+            r: Math.random() * 1.5 + 0.5,
+            vx: (Math.random() - 0.5) * 0.3,
+            vy: (Math.random() - 0.5) * 0.3,
+            alpha: Math.random() * 0.4 + 0.1
+        });
     }
-    for (const k of Object.keys(EMOTIONS)) if (!(k in probs)) probs[k] = 0;
 
-    let emotion = data && data.predicted_emotion;
-    if (!EMOTIONS[emotion]) {
-      emotion = Object.keys(probs).sort((a, b) => probs[b] - probs[a])[0] || 'joy';
+    function draw() {
+        ctx.clearRect(0, 0, w, h);
+
+        for (const p of particles) {
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.x < 0) p.x = w;
+            if (p.x > w) p.x = 0;
+            if (p.y < 0) p.y = h;
+            if (p.y > h) p.y = 0;
+
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, Math.max(0.1, p.r), 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(232,168,73,' + p.alpha + ')';
+            ctx.fill();
+        }
+
+        // Faint connection lines between nearby particles
+        for (let i = 0; i < particles.length; i++) {
+            for (let j = i + 1; j < particles.length; j++) {
+                const dx = particles[i].x - particles[j].x;
+                const dy = particles[i].y - particles[j].y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < 150) {
+                    ctx.beginPath();
+                    ctx.moveTo(particles[i].x, particles[i].y);
+                    ctx.lineTo(particles[j].x, particles[j].y);
+                    const lineAlpha = 0.04 * (1 - dist / 150);
+                    ctx.strokeStyle = 'rgba(232,168,73,' + lineAlpha + ')';
+                    ctx.lineWidth = 0.5;
+                    ctx.stroke();
+                }
+            }
+        }
+
+        animId = requestAnimationFrame(draw);
     }
-    const meta = EMOTIONS[emotion] || NEUTRAL;
-    const confidence =
-      data && typeof data.confidence === 'number' ? data.confidence : (probs[emotion] || 0);
+    draw();
 
-    setTheme(emotion);
-
-    /* --- headline --- */
-    els.resEmoji.textContent = meta.emoji;
-    els.resEmotion.textContent = emotion;
-    els.resQuote.textContent = `“${(data && data.text) || fallbackText}”`;
-    els.resMs.textContent = String(Math.max(1, Math.round(elapsedMs)));
-
-    /* --- probability bars, strongest first --- */
-    const entries = Object.keys(EMOTIONS)
-      .map((k) => [k, probs[k] || 0])
-      .sort((a, b) => b[1] - a[1]);
-
-    els.bars.replaceChildren();
-    entries.forEach(([label, p], i) => {
-      const m = EMOTIONS[label] || NEUTRAL;
-      const pct = Math.min(100, Math.max(0, p * 100));
-      const delay = 0.42 + i * 0.07;
-
-      const row = document.createElement('div');
-      row.className = 'bar-row r-anim' + (label === emotion ? ' top' : '');
-      row.style.setProperty('--d', `${delay.toFixed(2)}s`);
-      row.style.setProperty('--c', m.color);
-      row.style.setProperty('--p', `${pct}%`);
-      row.innerHTML =
-        `<span class="bar-emoji">${m.emoji}</span>` +
-        `<span class="bar-label">${escapeHtml(label)}</span>` +
-        `<div class="bar-track"><div class="bar-fill"></div></div>`;
-
-      const pctEl = document.createElement('span');
-      pctEl.className = 'bar-pct';
-      pctEl.dataset.target = pct.toFixed(1);
-      pctEl.textContent = '0.0%';
-      row.appendChild(pctEl);
-
-      els.bars.appendChild(row);
+    // Respect reduced motion preference
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    if (mq.matches) {
+        cancelAnimationFrame(animId);
+        ctx.clearRect(0, 0, w, h);
+    }
+    mq.addEventListener('change', function(e) {
+        if (e.matches) {
+            cancelAnimationFrame(animId);
+            ctx.clearRect(0, 0, w, h);
+        } else {
+            draw();
+        }
     });
-
-    /* --- reveal --- */
-    hideError();
-    els.result.hidden = false;
-    els.result.classList.remove('shown');
-    void els.result.offsetWidth; // restart entrance animations
-    els.result.classList.add('shown');
-
-    /* --- number count-ups, synced with the bar delays --- */
-    countUp(els.resConf, Math.min(100, confidence * 100), 1200);
-    els.bars.querySelectorAll('.bar-pct').forEach((el, i) => {
-      const target = parseFloat(el.dataset.target) || 0;
-      const delay = REDUCED_MOTION ? 0 : (0.42 + i * 0.07) * 1000;
-      window.setTimeout(() => countUp(el, target, 850, 1), delay);
-    });
-
-    /* --- bring into view if it landed below the fold --- */
-    window.setTimeout(() => {
-      const rect = els.result.getBoundingClientRect();
-      if (rect.top < 0 || rect.bottom > window.innerHeight) {
-        els.result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      }
-    }, 80);
-  }
-
-  /* =====================================================
-     6. Analyze
-     ===================================================== */
-  async function run(raw) {
-    if (busy) return;
-    const text = String(raw || '').trim();
-    lastText = text;
-    if (!text || text.length > MAX_LEN) { nudge(); return; }
-
-    setLoading(true);
-    hideError();
-    const t0 = performance.now();
-    try {
-      const data = await API.predict(text);
-      render(data, text, performance.now() - t0);
-    } catch (err) {
-      hideResult();
-      const msg = err && err.name === 'TypeError'
-        ? 'Could not reach the server — is the FastAPI backend running?'
-        : (err && err.message) || 'Something went wrong while analyzing.';
-      showError(msg);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  /* =====================================================
-     7. Health pill
-     ===================================================== */
-  async function pollHealth() {
-    const set = (text, cls) => {
-      els.status.className = 'status' + (cls ? ` ${cls}` : '');
-      els.statusText.textContent = text;
-    };
-    try {
-      const h = await API.health();
-      if (h && h.model_loaded) set('Model online', 'online');
-      else set('Model loading', 'warn');
-    } catch (_) {
-      set('Server offline', 'offline');
-    }
-  }
-
-  /* =====================================================
-     8. Wiring
-     ===================================================== */
-  els.form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    run(els.input.value);
-  });
-
-  els.input.addEventListener('input', updateCount);
-
-  els.input.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      els.form.requestSubmit();
-    }
-  });
-
-  document.querySelectorAll('.chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      if (busy) return;
-      els.input.value = chip.dataset.text || chip.textContent.trim();
-      updateCount();
-      els.form.requestSubmit();
-    });
-  });
-
-  els.retry.addEventListener('click', () => {
-    if (lastText) { els.input.value = lastText; updateCount(); }
-    els.form.requestSubmit();
-  });
-
-  /* platform-correct shortcut hint */
-  const isApple = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent);
-  els.kbdMod.textContent = isApple ? '⌘' : 'Ctrl';
-
-  /* gentle background parallax (desktop pointers only) */
-  if (!REDUCED_MOTION && els.bg && window.matchMedia('(pointer: fine)').matches) {
-    let tx = 0, ty = 0, cx = 0, cy = 0, raf = null;
-    const tick = () => {
-      cx += (tx - cx) * 0.055;
-      cy += (ty - cy) * 0.055;
-      els.bg.style.transform = `translate3d(${(cx * 22).toFixed(2)}px, ${(cy * 16).toFixed(2)}px, 0)`;
-      raf = (Math.abs(tx - cx) > 0.001 || Math.abs(ty - cy) > 0.001)
-        ? requestAnimationFrame(tick)
-        : null;
-    };
-    window.addEventListener('pointermove', (e) => {
-      tx = e.clientX / window.innerWidth - 0.5;
-      ty = e.clientY / window.innerHeight - 0.5;
-      if (!raf) raf = requestAnimationFrame(tick);
-    }, { passive: true });
-  }
-
-  updateCount();
-  pollHealth();
 })();
+
+/* ========================================
+   Health Check
+======================================== */
+async function checkHealth() {
+    try {
+        const res = await fetch('/health');
+        const data = await res.json();
+        if (data.model_loaded) {
+            statusDot.classList.add('active');
+            statusText.textContent = 'Model ready';
+        } else {
+            statusDot.classList.remove('active');
+            statusText.textContent = 'Model loading...';
+            setTimeout(checkHealth, 3000);
+        }
+    } catch (e) {
+        statusDot.classList.remove('active');
+        statusText.textContent = 'Offline';
+        setTimeout(checkHealth, 5000);
+    }
+}
+checkHealth();
+
+/* ========================================
+   Text Input Handling
+======================================== */
+textInput.addEventListener('input', function() {
+    const len = textInput.value.length;
+    charCount.textContent = len + ' / 2000';
+    charCount.classList.toggle('warn', len > 1800);
+    predictBtn.disabled = len === 0 || isPredicting;
+});
+
+// Sample hint chips
+document.querySelectorAll('.hint-chip').forEach(function(chip) {
+    chip.addEventListener('click', function() {
+        textInput.value = chip.dataset.text;
+        textInput.dispatchEvent(new Event('input'));
+        textInput.focus();
+    });
+});
+
+// Ctrl/Cmd + Enter shortcut to predict
+textInput.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !predictBtn.disabled) {
+        predictBtn.click();
+    }
+});
+
+/* ========================================
+   Toast Notifications
+======================================== */
+let toastTimer = null;
+
+function showToast(msg) {
+    toastMsg.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() {
+        toast.classList.remove('show');
+    }, 4000);
+}
+
+/* ========================================
+   Build Probability Bars (once on load)
+======================================== */
+emotionOrder.forEach(function(emotion) {
+    const meta = EMOTION_META[emotion];
+    const row = document.createElement('div');
+    row.className = 'prob-row';
+    row.innerHTML =
+        '<div class="prob-label">' +
+            '<span class="emoji">' + meta.emoji + '</span>' +
+            '<span>' + emotion + '</span>' +
+        '</div>' +
+        '<div class="prob-bar-track">' +
+            '<div class="prob-bar-fill" id="bar-' + emotion + '" style="background:' + meta.color + '"></div>' +
+        '</div>' +
+        '<div class="prob-value" id="val-' + emotion + '">0%</div>';
+    probBarsContainer.appendChild(row);
+});
+
+/* ========================================
+   Dynamic Style Injection Helpers
+======================================== */
+function getOrCreateStyle(id) {
+    let el = document.getElementById(id);
+    if (!el) {
+        el = document.createElement('style');
+        el.id = id;
+        document.head.appendChild(el);
+    }
+    return el;
+}
+
+/* ========================================
+   Predict
+======================================== */
+predictBtn.addEventListener('click', predict);
+
+async function predict() {
+    if (isPredicting) return;
+    const text = textInput.value.trim();
+    if (!text) return;
+
+    isPredicting = true;
+    predictBtn.disabled = true;
+    predictBtn.classList.add('loading');
+
+    // Hide previous result
+    resultSection.classList.remove('visible');
+
+    try {
+        const res = await fetch('/predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: text })
+        });
+
+        if (!res.ok) {
+            var err = await res.json().catch(function() {
+                return { detail: 'Something went wrong' };
+            });
+            throw new Error(err.detail || 'Prediction failed');
+        }
+
+        var data = await res.json();
+        renderResult(data);
+
+    } catch (e) {
+        showToast(e.message || 'Failed to connect to the server');
+    } finally {
+        isPredicting = false;
+        predictBtn.classList.remove('loading');
+        predictBtn.disabled = textInput.value.trim().length === 0;
+    }
+}
+
+/* ========================================
+   Render Result
+======================================== */
+function renderResult(data) {
+    var emotion = data.predicted_emotion;
+    var confidence = data.confidence;
+    var probs = data.all_probabilites;
+    var meta = EMOTION_META[emotion];
+
+    // Orb appearance
+    emotionOrb.textContent = meta.emoji;
+    emotionOrb.style.background = meta.color + '18';
+    emotionOrb.style.boxShadow = '0 0 40px ' + meta.glow + ', 0 0 80px ' + meta.glow;
+
+    // Orbiting ring colors
+    var ringStyle = getOrCreateStyle('ring-dot-style');
+    ringStyle.textContent = '.emotion-orb-ring { border-color: ' + meta.color + '40; }' +
+                            '.emotion-orb-ring::after { background: ' + meta.color + ' !important; }';
+
+    // Top accent line on the card
+    var beforeStyle = getOrCreateStyle('display-before-style');
+    beforeStyle.textContent = '.emotion-display::before { background: linear-gradient(90deg, transparent, ' + meta.color + ', transparent); }';
+
+    // Name & confidence
+    emotionName.textContent = emotion;
+    emotionName.style.color = meta.color;
+    emotionConfidence.innerHTML = 'Confidence: <strong>' + (confidence * 100).toFixed(1) + '%</strong>';
+
+    // Analyzed text preview
+    analyzedText.textContent = data.text;
+
+    // Ambient background glows shift to detected emotion
+    glow1.style.background = meta.color + '10';
+    glow2.style.background = meta.color + '08';
+
+    // Animate probability bars with staggered delay
+    emotionOrder.forEach(function(em, i) {
+        var bar = document.getElementById('bar-' + em);
+        var val = document.getElementById('val-' + em);
+        var pct = (probs[em] || 0) * 100;
+
+        // Reset first
+        bar.style.width = '0%';
+        val.textContent = '0%';
+        val.style.color = '';
+        val.style.fontWeight = '600';
+
+        setTimeout(function() {
+            bar.style.width = Math.max(pct, 0.5) + '%';
+            val.textContent = pct.toFixed(1) + '%';
+
+            // Highlight the winning emotion
+            if (em === emotion) {
+                val.style.color = EMOTION_META[em].color;
+                val.style.fontWeight = '700';
+            }
+        }, 100 + i * 60);
+    });
+
+    // Reveal the result section
+    setTimeout(function() {
+        resultSection.classList.add('visible');
+        resultSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 80);
+}
